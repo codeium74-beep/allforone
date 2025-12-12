@@ -1,0 +1,61 @@
+# Configuration par défaut du système Matriarche
+
+matriarche:
+  node_id: matriarche_001
+  min_sleep: 600        # 10 minutes
+  max_sleep: 21600      # 6 heures
+  wake_variance: 0.3    # ±30%
+  storage_path: /tmp/matriarche_storage
+  knowledge_path: /tmp/matriarche_knowledge
+  replication_factor: 5
+
+sub_matriarche:
+  proto_pool_size: 15
+  report_interval: 1800  # 30 minutes
+  storage_path: /tmp/sub_storage
+
+proto_agent:
+  beacon_interval_min: 300   # 5 minutes
+  beacon_interval_max: 1800  # 30 minutes
+  exploration_interval_min: 60
+  exploration_interval_max: 300
+
+percepteur:
+  trusted_subs: []
+  storage_path: /tmp/perceptor_storage
+  suspicious_threshold: 5
+  validation_timeout: 30
+
+pow:
+  difficulty: 4
+  timeout: 60
+  reward:
+    cpu_cores: 2
+    duration: 3600
+    priority_boost: 1.5
+
+pom:
+  shard_size_mb: 5
+  timeout: 300
+  reward:
+    storage_mb: 50
+    duration: 7200
+    bandwidth_boost: 1.5
+
+resource_allocator:
+  max_cpu_per_vm: 8
+  max_ram_per_vm: 16384    # MB
+  max_storage_per_vm: 102400  # MB
+
+monitoring:
+  api_port: 8000
+  api_host: "0.0.0.0"
+  metrics_interval: 5
+  history_size: 1000
+
+kill_switch:
+  armed: true
+  thresholds:
+    detections_per_minute: 5
+    compromised_systems_max: 25
+  heartbeat_timeout: 30
