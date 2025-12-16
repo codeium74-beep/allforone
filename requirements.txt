@@ -46,6 +46,12 @@ python-jose[cryptography]>=3.3.0
 python-nmap>=0.7.1
 scapy>=2.5.0
 requests>=2.31.0
+pymetasploit3>=1.0.3
+paramiko>=3.4.0
+pysmb>=1.2.9
+Pillow>=10.1.0
+opencv-python>=4.8.1
+dnslib>=0.9.23
 
 # Testing
 pytest>=7.4.0
