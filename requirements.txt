@@ -56,3 +56,21 @@ dnslib>=0.9.23
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+
+# AI/LLM Intelligence
+transformers>=4.36.0
+torch>=2.1.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+peft>=0.7.0
+sentencepiece>=0.1.99
+protobuf>=4.25.0
+
+# Advanced Polymorphism
+astor>=0.8.1
+
+# Proxmox Integration
+proxmoxer>=2.0.1
+
+# Additional Security
+pyOpenSSL>=23.3.0

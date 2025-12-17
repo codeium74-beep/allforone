@@ -53,7 +53,11 @@ class MissionDelegator:
         objective = mission.get('objective', '')
         priority = mission.get('priority', 'normal')
         
-        # Décomposition heuristique simple
+        # Si la mission contient un plan tactique généré par le LLM, l'utiliser
+        if 'tactical_plan' in mission:
+            return self._decompose_from_tactical_plan(mission)
+        
+        # Sinon, décomposition heuristique simple
         subtasks = []
         
         # Analyse de l'objectif
@@ -119,6 +123,131 @@ class MissionDelegator:
         for i, task in enumerate(subtasks):
             task['task_id'] = f"{mission['mission_id']}_task_{i}"
             task['mission_id'] = mission['mission_id']
+        
+        return subtasks
+    
+    def _decompose_from_tactical_plan(self, mission: Dict) -> List[Dict]:
+        """Décompose une mission basée sur un plan tactique LLM"""
+        tactical_plan = mission['tactical_plan']
+        action = tactical_plan.get('action', 'reconnaissance')
+        target = tactical_plan.get('target', 'unknown')
+        priority = mission.get('priority', 'medium')
+        
+        subtasks = []
+        
+        # Décomposition intelligente basée sur l'action du plan tactique
+        if action == 'exploit':
+            subtasks = [
+                {
+                    'type': 'targeted_reconnaissance',
+                    'description': f'Deep scan of {target}',
+                    'target': target,
+                    'priority': priority
+                },
+                {
+                    'type': 'vulnerability_verification',
+                    'description': f'Verify exploitable vulnerabilities on {target}',
+                    'target': target,
+                    'priority': priority
+                },
+                {
+                    'type': 'exploitation',
+                    'description': f'Execute exploit on {target}',
+                    'target': target,
+                    'priority': priority,
+                    'tactical_guidance': tactical_plan.get('reasoning', '')
+                },
+                {
+                    'type': 'post_exploitation',
+                    'description': f'Establish persistence and gather intel',
+                    'target': target,
+                    'priority': priority
+                }
+            ]
+        
+        elif action == 'bruteforce':
+            subtasks = [
+                {
+                    'type': 'service_identification',
+                    'description': f'Identify bruteforce targets on {target}',
+                    'target': target,
+                    'priority': priority
+                },
+                {
+                    'type': 'credential_attack',
+                    'description': f'Execute credential bruteforce on {target}',
+                    'target': target,
+                    'priority': priority,
+                    'tactical_guidance': tactical_plan.get('reasoning', '')
+                },
+                {
+                    'type': 'access_validation',
+                    'description': f'Validate obtained access',
+                    'target': target,
+                    'priority': priority
+                }
+            ]
+        
+        elif action == 'lateral_move':
+            subtasks = [
+                {
+                    'type': 'internal_reconnaissance',
+                    'description': f'Map internal network from {target}',
+                    'target': target,
+                    'priority': priority
+                },
+                {
+                    'type': 'privilege_escalation',
+                    'description': f'Escalate privileges on {target}',
+                    'target': target,
+                    'priority': priority
+                },
+                {
+                    'type': 'lateral_movement',
+                    'description': f'Move to adjacent systems',
+                    'target': target,
+                    'priority': priority,
+                    'tactical_guidance': tactical_plan.get('reasoning', '')
+                }
+            ]
+        
+        elif action == 'reconnaissance':
+            subtasks = [
+                {
+                    'type': 'network_scan',
+                    'description': f'Comprehensive scan of {target}',
+                    'target': target,
+                    'priority': priority,
+                    'tactical_guidance': tactical_plan.get('reasoning', '')
+                },
+                {
+                    'type': 'intelligence_gathering',
+                    'description': f'Gather detailed intelligence',
+                    'target': target,
+                    'priority': priority
+                }
+            ]
+        
+        else:
+            # Action inconnue, fallback
+            subtasks = [
+                {
+                    'type': 'generic',
+                    'description': f'{action} on {target}',
+                    'target': target,
+                    'priority': priority,
+                    'tactical_guidance': tactical_plan.get('reasoning', '')
+                }
+            ]
+        
+        # Ajout de métadonnées
+        for i, task in enumerate(subtasks):
+            task['task_id'] = f"{mission['mission_id']}_task_{i}"
+            task['mission_id'] = mission['mission_id']
+            task['from_tactical_plan'] = True
+            task['estimated_success'] = tactical_plan.get('estimated_success', 0.5)
+        
+        print(f"[Delegator] Generated {len(subtasks)} tactical subtasks for {action} on {target}")
         
         return subtasks
     

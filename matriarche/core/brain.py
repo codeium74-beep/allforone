@@ -13,6 +13,8 @@ from matriarche.core.timer import MatriarchTimer
 from matriarche.core.delegator import MissionDelegator
 from matriarche.core.collector import IntelligenceCollector
 from matriarche.core.mutator import MutationOrchestrator
+from matriarche.intelligence.tactical_brain import TacticalBrain
+from matriarche.intelligence.feedback_loop import FeedbackLoop
 from utils.crypto_utils import CryptoManager
 from utils.storage_utils import DistributedStorage, KnowledgeGraph
 
@@ -44,6 +46,26 @@ class MatriarchBrain:
         # Graphe de connaissances
         self.knowledge = KnowledgeGraph(
             config.get('knowledge_path', '/tmp/matriarche_knowledge')
+        )
+        
+        # Intelligence tactique (LLM)
+        self.tactical_brain = None
+        if config.get('enable_tactical_brain', True):
+            try:
+                self.tactical_brain = TacticalBrain({
+                    'use_4bit_quantization': True,
+                    'max_memory_gb': 0.8,
+                    'auto_load': False  # Chargement manuel pour contrôle
+                })
+                print(f"[{self.node_id}] TacticalBrain initialized (lazy loading)")
+            except Exception as e:
+                print(f"[{self.node_id}] TacticalBrain initialization failed: {e}")
+                self.tactical_brain = None
+        
+        # Feedback loop pour apprentissage
+        self.feedback_loop = FeedbackLoop(
+            storage_path=config.get('feedback_path', '/tmp/matriarche_feedback'),
+            max_history=100
         )
         
         # Orchestration
@@ -92,6 +114,15 @@ class MatriarchBrain:
             # Phase 2: Analyse et planification
             print(f"[{self.node_id}] Analyzing collected data...")
             self._analyze_intelligence(intel)
+            
+            # Phase 2b: Génération de plan tactique avec LLM
+            if self.tactical_brain and len(intel) > 0:
+                print(f"[{self.node_id}] Generating tactical plan with LLM...")
+                tactical_plan = self._generate_tactical_plan(intel)
+                
+                if tactical_plan:
+                    # Enregistrement du plan pour délégation
+                    self._process_tactical_plan(tactical_plan)
             
             # Phase 3: Orchestration des mutations
             if self.wake_count % 3 == 0:  # Tous les 3 réveils
@@ -143,6 +174,54 @@ class MatriarchBrain:
         token_hash = self.crypto.generate_hash(provided_token.encode())
         
         return token_hash == expected_hash
+    
+    def _generate_tactical_plan(self, intel: List[Dict]) -> Optional[Dict]:
+        """Génère un plan tactique avec le TacticalBrain"""
+        try:
+            # Récupération du contexte de feedback
+            feedback_context = self.feedback_loop.get_feedback_context(max_failures=5)
+            
+            # Génération du plan
+            plan = self.tactical_brain.analyze_and_plan(intel, feedback_context)
+            
+            print(f"[{self.node_id}] Tactical plan generated: {plan.get('action')} on {plan.get('target')}")
+            
+            # Évaluation du plan par le feedback loop
+            recommendation = self.feedback_loop.get_recommendation(plan)
+            
+            if not recommendation['recommended']:
+                print(f"[{self.node_id}] ⚠️  Plan not recommended: {recommendation['reason']}")
+                
+                if recommendation.get('alternative_suggested'):
+                    print(f"[{self.node_id}] Using alternative: {recommendation['alternative']}")
+                    # Modifier le plan avec l'alternative
+                    plan['action'] = recommendation['alternative']['action']
+                    plan['reasoning'] += f" | Alternative suggested: {recommendation['alternative']['reason']}"
+            
+            return plan
+            
+        except Exception as e:
+            print(f"[{self.node_id}] Tactical plan generation failed: {e}")
+            return None
+    
+    def _process_tactical_plan(self, plan: Dict):
+        """Traite un plan tactique et crée une mission correspondante"""
+        # Conversion du plan en mission
+        mission = {
+            'objective': f"{plan['action']} on {plan['target']}",
+            'priority': plan.get('priority', 'medium'),
+            'constraints': {
+                'stealth': 'high',
+                'speed': 'normal'
+            },
+            'tactical_plan': plan,
+            'auth_token': self.config.get('master_key', 'warrior')  # Authentification
+        }
+        
+        # Ajout à la queue de délégation
+        self.delegator.add_mission(mission)
+        
+        print(f"[{self.node_id}] Tactical mission created from plan")
     
     def _analyze_intelligence(self, intel: List[Dict]):
         """Analyse les informations collectées"""
@@ -205,15 +284,37 @@ class MatriarchBrain:
         except Exception as e:
             print(f"[{self.node_id}] Could not load state: {e}")
     
+    def report_mission_result(self, mission_id: str, success: bool, result: Dict):
+        """Enregistre le résultat d'une mission pour apprentissage"""
+        # Recherche de la mission dans l'historique
+        for record in self.delegator.mission_history:
+            if record['mission']['mission_id'] == mission_id:
+                mission = record['mission']
+                
+                # Si la mission avait un plan tactique, enregistrer dans feedback loop
+                if 'tactical_plan' in mission:
+                    self.feedback_loop.record_operation(
+                        mission['tactical_plan'],
+                        success,
+                        result
+                    )
+                    print(f"[{self.node_id}] Mission result recorded for learning")
+                
+                break
+    
     async def shutdown(self):
         """Arrêt propre de la Matriarche"""
         print(f"[{self.node_id}] Shutting down...")
         self.running = False
         self._save_state()
+        
+        # Déchargement du LLM si chargé
+        if self.tactical_brain and self.tactical_brain.model_loaded:
+            self.tactical_brain.unload_model()
     
     def get_status(self) -> Dict:
         """Retourne le statut actuel"""
-        return {
+        status = {
             'node_id': self.node_id,
             'state': self.state,
             'wake_count': self.wake_count,
@@ -222,6 +323,15 @@ class MatriarchBrain:
             'timer_status': self.timer.get_sleep_status(),
             'storage_stats': self.storage.get_storage_stats()
         }
+        
+        # Ajout des statistiques du TacticalBrain si disponible
+        if self.tactical_brain:
+            status['tactical_brain'] = self.tactical_brain.get_statistics()
+        
+        # Ajout des statistiques du FeedbackLoop
+        status['feedback_loop'] = self.feedback_loop.get_statistics()
+        
+        return status
 
 
 async def main():
